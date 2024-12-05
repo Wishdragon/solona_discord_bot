@@ -1,7 +1,11 @@
-import { Client, IntentsBitField } from "discord.js";
+import { Client, IntentsBitField, EmbedBuilder } from "discord.js";
 import "dotenv/config";
 import { Keypair, clusterApiUrl, Connection, PublicKey } from "@solana/web3.js";
-import { handlePriceList, handleSetAlert } from "./command.js";
+import {
+  handlePriceList,
+  handleSetAlert,
+  monitorPrepaidDex,
+} from "./command.js";
 import {
   priceList,
   setAlert,
@@ -16,6 +20,7 @@ import {
 import { handlePriceChangeCommand } from "./priceChange/price_change.js";
 import { BurnHistoryTracker } from "./priceChange/burnHistoryTracker.js";
 import { WalletBalanceTracker } from "./priceChange/walletBalanceTracker.js";
+import { PREPAID_DEX_CHANNEL_ID } from "./constants/channels.js";
 
 const client = new Client({
   intents: [
@@ -25,6 +30,8 @@ const client = new Client({
     IntentsBitField.Flags.GuildMembers,
   ],
 });
+
+const TOKEN_LAMBO_ADDRESS = "So11111111111111111111111111111111111111112";
 
 async function init() {
   // initializeDatabase();
@@ -41,6 +48,13 @@ async function init() {
 
   const burnTracker = new BurnHistoryTracker();
   const walletBalance = new WalletBalanceTracker();
+
+  // Listen for when the bot is ready
+  client.once("ready", async () => {
+    console.log(`Logged in as ${client.user.tag}`);
+
+    monitorPrepaidDex(client);
+  });
 
   client.on("interactionCreate", async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
