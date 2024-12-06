@@ -16,11 +16,14 @@ import {
 } from "./priceChange/price_change_commands.js";
 import fetch from "node-fetch";
 import {
+  DEV_BURNS_CHANNEL_ID,
   FRESH_ONE_SOL_CHANNEL_ID,
   FRESH_OVER_ONE_SOL_CHANNE_ID,
   LARGE_BUYS_CHANNEL_ID,
   PREPAID_DEX_CHANNEL_ID,
+  TEN_DEV_BURNS_CHANNEL_ID,
 } from "./constants/channels.js";
+import { TOKEN_META_DATA } from "./constants/token_meta_data.js";
 
 // Solana mainnet connection
 // const connection = new Connection(clusterApiUrl("mainnet-beta"), "confirmed");
@@ -210,134 +213,321 @@ async function handleMyAlerts(message) {
   );
 }
 
-async function monitorPrepaidDex(client) {
+async function monitorTransactions(client) {
   const connection = new Connection(clusterApiUrl("mainnet-beta"), {
     commitment: "confirmed",
     maxSupportedTransactionVersion: 0, // Ensures compatibility with transaction version 0
   });
+  TOKEN_META_DATA.map(async (token) => {
+    const monitoredAddress = new PublicKey(token.mint);
 
-  const monitoredAddress = new PublicKey(PURPLE_BITCOIN_ADDRESS);
-  const MINIMUM_SOL_BOUGHT = 0; // Minimum SOL threshold
-
-  const largestAccounts = await QUICK_CONNECT.getTokenLargestAccounts(
-    monitoredAddress
-  );
-  const totalSupply = largestAccounts.value.reduce(
-    (acc, account) => acc + account.uiAmount,
-    0
-  );
-
-  // Fetch account information for each of these accounts
-  const accountInfoPromises = largestAccounts.value.map(async (account) => {
-    const accountInfo = await QUICK_CONNECT.getParsedAccountInfo(
-      account.address
+    const largestAccounts = await QUICK_CONNECT.getTokenLargestAccounts(
+      monitoredAddress
     );
-    return {
-      address: account.address,
-      amount: account.uiAmount,
-    };
-  });
+    const totalSupply = largestAccounts.value.reduce(
+      (acc, account) => acc + account.uiAmount,
+      0
+    );
 
-  const topHolders = await Promise.all(accountInfoPromises);
+    const accountInfoPromises = largestAccounts.value.map(async (account) => {
+      return {
+        address: account.address,
+        amount: account.uiAmount,
+      };
+    });
+    const topHolders = await Promise.all(accountInfoPromises);
+    let holdersList = "Top 10 Holders\n";
+    topHolders.slice(0, 10).forEach((holder, index) => {
+      const percentage = ((holder.amount / totalSupply) * 100).toFixed(2);
+      holdersList += `${index + 1}. ${holder.address
+        .toBase58()
+        .slice(0, 6)} - ${percentage}%\n`;
+    });
 
-  let holdersList = "Top 10 Holders\n";
-  topHolders.slice(0, 10).forEach((holder, index) => {
-    const percentage = ((holder.amount / totalSupply) * 100).toFixed(2);
-    holdersList += `${index + 1}. ${holder.address
-      .toBase58()
-      .slice(0, 6)} - ${percentage}%\n`;
-  });
+    connection.onLogs(monitoredAddress, async (logs) => {
+      const signature = logs.signature;
+      console.log(`${token.name}:`, signature);
 
-  connection.onLogs(monitoredAddress, async (logs) => {
-    const signature = logs.signature;
-    // const signature =
-    //   "WZVta642pcCeupZ6zt7MvARp1QVdgVt3XDxWDyLQxFKthtvBQjca9zBBfx17jvzUJxKk9r7kcttGmZpbqzRTvno";
-    console.log("Signature", signature);
-    await waitForSeconds(60);
+      await waitForSeconds(60);
 
-    const url = "https://api.mainnet-beta.solana.com"; // Devnet Solana endpoint
-    const requestBody = {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "getTransaction",
-      params: [signature, { maxSupportedTransactionVersion: 0 }],
-    };
+      const url = "https://api.mainnet-beta.solana.com";
+      const requestBody = {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "getTransaction",
+        params: [signature, { maxSupportedTransactionVersion: 0 }],
+      };
 
-    try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
-      });
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+        });
 
-      const data = await response.json();
-      const txDetails = data.result;
+        const data = await response.json();
+        const txDetails = data.result;
 
-      if (!txDetails) return;
+        if (!txDetails) return;
 
-      const { meta, transaction } = txDetails;
-      const preBalances = meta.preBalances;
-      const postBalances = meta.postBalances;
+        const { meta, transaction } = txDetails;
+        const preBalances = meta.preBalances;
+        const postBalances = meta.postBalances;
 
-      // Identify SOL inflow and token outflow
-      let solReceived = 0;
-      let tokenPaid = 0;
-      let buyerAddress = "";
+        // Identify SOL inflow and token outflow
+        let solReceived = 0;
+        let tokenPaid = 0;
+        let buyerAddress = "";
 
-      meta.preTokenBalances.forEach((preTokenBalance, index) => {
-        const postTokenBalance = meta.postTokenBalances[index];
+        meta.preTokenBalances.forEach((preTokenBalance, index) => {
+          const postTokenBalance = meta.postTokenBalances[index];
 
-        if (preTokenBalance.mint === monitoredAddress.toBase58()) {
-          tokenPaid = Math.abs(
-            (preTokenBalance.uiTokenAmount.uiAmount || 0) -
-              (postTokenBalance.uiTokenAmount.uiAmount || 0)
+          if (preTokenBalance.mint === monitoredAddress.toBase58()) {
+            tokenPaid = Math.abs(
+              (preTokenBalance.uiTokenAmount.uiAmount || 0) -
+                (postTokenBalance.uiTokenAmount.uiAmount || 0)
+            );
+          }
+        });
+
+        solReceived = Math.abs((postBalances[0] - preBalances[0]) / 1e9); // Lamports to SOL
+
+        // Identify buyer (sender of transaction)
+        buyerAddress = transaction.message.accountKeys[0];
+
+        const { isFresh, fundingSources } = await isFreshWallet(buyerAddress);
+
+        if (!isFresh && solReceived > 3 && tokenPaid > 0) {
+          sendLargeBuysChannel(
+            client,
+            buyerAddress,
+            tokenPaid,
+            solReceived,
+            holdersList,
+            token
+          );
+        } else if (isFresh && solReceived > 2 && tokenPaid > 0) {
+          sendFreshOverOneSoleChannel(
+            client,
+            fundingSources,
+            buyerAddress,
+            tokenPaid,
+            solReceived,
+            holdersList,
+            token
+          );
+        } else if (isFresh && solReceived > 1 && tokenPaid > 0) {
+          sendFreshOneSolChannel(
+            client,
+            fundingSources,
+            buyerAddress,
+            tokenPaid,
+            solReceived,
+            holdersList,
+            token
           );
         }
-      });
-
-      solReceived = Math.abs((postBalances[0] - preBalances[0]) / 1e9); // Lamports to SOL
-
-      // Identify buyer (sender of transaction)
-      buyerAddress = transaction.message.accountKeys[0];
-
-      const { isFresh, fundingSources } = await isFreshWallet(buyerAddress);
-
-      if (!isFresh && solReceived > 3 && tokenPaid > 0) {
-        sendLargeBuysChannel(
-          client,
-          buyerAddress,
-          tokenPaid,
-          solReceived,
-          holdersList
-        );
-      } else if (isFresh && solReceived > 2 && tokenPaid > 0) {
-        sendFreshOverOneSoleChannel(
-          client,
-          fundingSources,
-          buyerAddress,
-          tokenPaid,
-          solReceived,
-          holdersList
-        );
-      } else if (isFresh && solReceived > 1 && tokenPaid > 0) {
-        sendFreshOneSoleChannel(
-          client,
-          fundingSources,
-          buyerAddress,
-          tokenPaid,
-          solReceived,
-          holdersList
-        );
+      } catch (error) {
+        console.error("Error fetching transaction:", error);
       }
-    } catch (error) {
-      console.error("Error fetching transaction:", error);
-    }
+    });
   });
+}
 
-  function waitForSeconds(seconds) {
-    return new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+async function monitorDeveloperBurns(client) {
+  const connection = new Connection(clusterApiUrl("mainnet-beta"), {
+    commitment: "confirmed",
+    maxSupportedTransactionVersion: 0, // Ensures compatibility with transaction version 0
+  });
+  TOKEN_META_DATA.map(async (token) => {
+    const monitoredWallet = new PublicKey(token.updateAuthority);
+
+    connection.onLogs(monitoredWallet, async (logs, ctx) => {
+      try {
+        // const signature = logs.signature;
+
+        const signature =
+          "hQnzcHeYPLM4jv5nZ4fwxQHfRhyjQKRqdvTM17PPS3EehTA6dArSwfL9Sfsv1hwJoc7FLSyHexpkkCPaKsKHJbC";
+        console.log("Dev Transaction", signature);
+
+        // waitForSeconds(60);
+
+        const url = "https://api.mainnet-beta.solana.com";
+        const requestBody = {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "getTransaction",
+          params: [signature, { maxSupportedTransactionVersion: 0 }],
+        };
+
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+        });
+
+        const data = await response.json();
+        const txDetails = data.result;
+
+        if (!txDetails) return;
+
+        const message = txDetails.transaction.message;
+
+        // Look for burn instructions in the transaction
+        for (const instruction of message.instructions) {
+          const programId =
+            message.accountKeys[instruction.programIdIndex].toString();
+
+          // Check if the program is the Token Program (standard for token instructions)
+          if (programId === "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") {
+            const data = Buffer.from(instruction.data, "base64");
+
+            // Check if it's a burn instruction (0x0a is the code for burn)
+            if (data[0] === 0x0a) {
+              const sourceAccount =
+                message.accountKeys[instruction.accounts[0]].toString();
+              const mint =
+                message.accountKeys[instruction.accounts[1]].toString();
+              const owner =
+                message.accountKeys[instruction.accounts[2]].toString();
+
+              if (mint === token.mint && owner === token.updateAuthority) {
+                const amountBuffer = data.slice(1, 9); // Burn amount is in the next 8 bytes
+                const amountBurned = amountBuffer.readBigUInt64LE();
+
+                // Fetch total supply to calculate percentage burned
+                const tokenSupply = await getTokenSupply(token.mint);
+                const burnPercentage = (
+                  (amountBurned / tokenSupply) *
+                  100
+                ).toFixed(2);
+                if (burnPercentage < 10)
+                  sendDevBurnChannel(
+                    client,
+                    amountBurned,
+                    burnPercentage,
+                    token
+                  );
+                else
+                  sendTenDevBurnChannel(
+                    client,
+                    amountBurned,
+                    burnPercentage,
+                    token
+                  );
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`Error processing logs: ${error.message}`);
+      }
+    });
+  });
+}
+
+// Function to fetch total token supply
+async function getTokenSupply(tokenAddress) {
+  const tokenSupplyInfo = await QUICK_CONNECT.getTokenSupply(
+    new PublicKey(tokenAddress)
+  );
+  return Number(tokenSupplyInfo.value.amount); // Returns total supply as a number
+}
+
+function waitForSeconds(seconds) {
+  return new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+}
+
+async function sendDevBurnChannel(client, amountBurned, burnPercentage, token) {
+  let channel = await client.channels.fetch(DEV_BURNS_CHANNEL_ID);
+  if (channel) {
+    const embed = new EmbedBuilder()
+      .setColor(0xff5733)
+      .setTitle(`${token.name.toUpperCase()} (${token.symbol})`)
+      .setThumbnail(token.image)
+      .addFields(
+        {
+          name: "Token Information 📄",
+          value:
+            "```" +
+            `Dev has burnt ${amountBurned} (${burnPercentage}) ${token.symbol} tokens from ${token.name}!` +
+            "```",
+        },
+        {
+          name: "Contract Address 📜",
+          value: "```" + `${token.mint}` + "```",
+        },
+        {
+          name: "Token Description 📝",
+          value: "```" + `${token.description}` + "```",
+        },
+        {
+          name: "Social Media 📱",
+          value: `[Twitter](${token.twitter})\n[Telegram](${token.telegram})\n[Website](${token.website})`,
+          inline: true,
+        },
+        {
+          name: "Useful Links 📎",
+          value:
+            "[Dev Wallet](https://link-to-dev-wallet) | [Buy Token](https://link-to-buy-token)",
+          inline: true,
+        },
+        { name: "Burnt 🔥", value: "5 hours ago", inline: true },
+        { name: "Current Market Cap 💰", value: "138604.74$" }
+      )
+      .setTimestamp();
+    channel.send({ embeds: [embed] });
+  }
+}
+
+async function sendTenDevBurnChannel(
+  client,
+  amountBurned,
+  burnPercentage,
+  token
+) {
+  let channel = await client.channels.fetch(TEN_DEV_BURNS_CHANNEL_ID);
+  if (channel) {
+    const embed = new EmbedBuilder()
+      .setColor(0xff5733)
+      .setTitle(`${token.name.toUpperCase()} (${token.symbol})`)
+      .setThumbnail(token.image)
+      .addFields(
+        {
+          name: "Token Information 📄",
+          value:
+            "```" +
+            `Dev has burnt ${amountBurned} (${burnPercentage}) ${token.symbol} tokens from ${token.name}!` +
+            "```",
+        },
+        {
+          name: "Contract Address 📜",
+          value: "```" + `${token.mint}` + "```",
+        },
+        {
+          name: "Token Description 📝",
+          value: "```" + `${token.description}` + "```",
+        },
+        {
+          name: "Social Media 📱",
+          value: `[Twitter](${token.twitter})\n[Telegram](${token.telegram})\n[Website](${token.website})`,
+          inline: true,
+        },
+        {
+          name: "Useful Links 📎",
+          value:
+            "[Dev Wallet](https://link-to-dev-wallet) | [Buy Token](https://link-to-buy-token)",
+          inline: true,
+        },
+        { name: "Burnt 🔥", value: "5 hours ago", inline: true },
+        { name: "Current Market Cap 💰", value: "138604.74$" }
+      )
+      .setTimestamp();
+    channel.send({ embeds: [embed] });
   }
 }
 
@@ -346,13 +536,15 @@ async function sendLargeBuysChannel(
   buyerAddress,
   tokenPaid,
   solReceived,
-  holdersList
+  holdersList,
+  token
 ) {
   let channel = await client.channels.fetch(LARGE_BUYS_CHANNEL_ID);
   if (channel) {
     const embed = new EmbedBuilder()
       .setColor(0xff5733)
-      .setTitle("PURPLE BITCOIN (PBTC):wave:")
+      .setTitle(`${token.name.toUpperCase()} (${token.symbol})`)
+      .setThumbnail(token.image)
       .addFields(
         {
           name: "Purchase Information 📄",
@@ -366,7 +558,7 @@ async function sendLargeBuysChannel(
         },
         {
           name: "Contract Address 📜",
-          value: "```" + `${PURPLE_BITCOIN_ADDRESS}` + "```",
+          value: "```" + `${token.mint}` + "```",
         },
         {
           name: "Holders 👯‍♀️",
@@ -374,14 +566,13 @@ async function sendLargeBuysChannel(
         },
         {
           name: "Social Media 📱",
-          value:
-            "[Twitter](https://x.com)\n[Telegram](https://telegram.com)\n[Website](https://www.purplebitcoin.com)",
+          value: `[Twitter](${token.twitter})\n[Telegram](${token.telegram})\n[Website](${token.website})`,
           inline: true,
         },
         {
           name: "Useful Links 📎",
           value:
-            "[Dev Wallet](https://link-to-dev-wallet)|[Buy Token](https://link-to-buy-token)",
+            "[Dev Wallet](https://link-to-dev-wallet) | [Buy Token](https://link-to-buy-token)",
           inline: true,
         },
         { name: "Coin Created 💿", value: "5 hours ago", inline: true },
@@ -393,8 +584,7 @@ async function sendLargeBuysChannel(
           inline: true,
         }
       )
-      .setTimestamp()
-      .setFooter({ text: "Quick Buy: BULXI | PHOTON | PLONK | BULXRF" });
+      .setTimestamp();
     channel.send({ embeds: [embed] });
   }
 }
@@ -405,13 +595,14 @@ async function sendFreshOverOneSoleChannel(
   buyerAddress,
   tokenPaid,
   solReceived,
-  holdersList
+  holdersList,
+  token
 ) {
   let channel = await client.channels.fetch(FRESH_OVER_ONE_SOL_CHANNE_ID);
   if (channel) {
     const embed = new EmbedBuilder()
       .setColor(0xff5733)
-      .setTitle("PURPLE BITCOIN (PBTC)")
+      .setTitle(`${token.name.toUpperCase()} (${token.symbol})`)
       .addFields(
         {
           name: "Purchase Information 📄",
@@ -432,7 +623,7 @@ async function sendFreshOverOneSoleChannel(
         },
         {
           name: "Contract Address 📜",
-          value: "```" + `${PURPLE_BITCOIN_ADDRESS}` + "```",
+          value: "```" + `${token.mint}` + "```",
         },
         {
           name: "Holders 👯‍♀️",
@@ -440,8 +631,7 @@ async function sendFreshOverOneSoleChannel(
         },
         {
           name: "Social Media 📱",
-          value:
-            "[Twitter](https://x.com)\n[Telegram](https://telegram.com)\n[Website](https://www.purplebitcoin.com)",
+          value: `[Twitter](${token.twitter})\n[Telegram](${token.telegram})\n[Website](${token.website})`,
           inline: true,
         },
         {
@@ -459,13 +649,12 @@ async function sendFreshOverOneSoleChannel(
           inline: true,
         }
       )
-      .setTimestamp()
-      .setFooter({ text: "Quick Buy: BULXI | PHOTON | PLONK | BULXRF" });
+      .setTimestamp();
     channel.send({ embeds: [embed] });
   }
 }
 
-async function sendFreshOneSoleChannel(
+async function sendFreshOneSolChannel(
   client,
   fundingSources,
   buyerAddress,
@@ -477,7 +666,7 @@ async function sendFreshOneSoleChannel(
   if (channel) {
     const embed = new EmbedBuilder()
       .setColor(0xff5733)
-      .setTitle("PURPLE BITCOIN (PBTC)")
+      .setTitle(`${token.name.toUpperCase()} (${token.symbol})`)
       .addFields(
         {
           name: "Purchase Information 📄",
@@ -498,7 +687,7 @@ async function sendFreshOneSoleChannel(
         },
         {
           name: "Contract Address 📜",
-          value: "```" + `${PURPLE_BITCOIN_ADDRESS}` + "```",
+          value: "```" + `${token.mint}` + "```",
         },
         {
           name: "Holders 👯‍♀️",
@@ -506,8 +695,7 @@ async function sendFreshOneSoleChannel(
         },
         {
           name: "Social Media 📱",
-          value:
-            "[Twitter](https://x.com)\n[Telegram](https://telegram.com)\n[Website](https://www.purplebitcoin.com)",
+          value: `[Twitter](${token.twitter})\n[Telegram](${token.telegram})\n[Website](${token.website})`,
           inline: true,
         },
         {
@@ -525,8 +713,7 @@ async function sendFreshOneSoleChannel(
           inline: true,
         }
       )
-      .setTimestamp()
-      .setFooter({ text: "Quick Buy: BULXI | PHOTON | PLONK | BULXRF" });
+      .setTimestamp();
     channel.send({ embeds: [embed] });
   }
 }
@@ -589,21 +776,10 @@ async function isFreshWallet(walletAddress) {
   }
 }
 
-async function getTokenPriceFromCoingecko(tokenId) {
-  const url = `https://api.coingecko.com/api/v3/simple/token_price/solana?contract_addresses=${tokenId}&vs_currencies=sol`;
-
-  try {
-    const response = await fetch(url);
-    const data = await response.json();
-
-    if (data[tokenId] && data[tokenId].sol) {
-      console.log(`Token Price in SOL: ${data[tokenId].sol} SOL`);
-    } else {
-      console.log("Price not found for the given token.", data);
-    }
-  } catch (error) {
-    console.error("Error fetching token price from Coingecko:", error);
-  }
-}
-
-export { handleSetAlert, handlePriceList, handleMyAlerts, monitorPrepaidDex };
+export {
+  handleSetAlert,
+  handlePriceList,
+  handleMyAlerts,
+  monitorTransactions,
+  monitorDeveloperBurns,
+};

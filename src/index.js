@@ -4,7 +4,8 @@ import { Keypair, clusterApiUrl, Connection, PublicKey } from "@solana/web3.js";
 import {
   handlePriceList,
   handleSetAlert,
-  monitorPrepaidDex,
+  monitorTransactions,
+  monitorDeveloperBurns,
 } from "./command.js";
 import {
   priceList,
@@ -57,7 +58,8 @@ async function init() {
   client.once("ready", async () => {
     console.log(`Logged in as ${client.user.tag}`);
 
-    monitorPrepaidDex(client);
+    monitorTransactions(client);
+    monitorDeveloperBurns(client);
   });
 
   client.on("interactionCreate", async (interaction) => {
