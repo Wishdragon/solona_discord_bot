@@ -1,6 +1,5 @@
 import dotenv from "dotenv/config";
 import { Connection, PublicKey, clusterApiUrl } from "@solana/web3.js";
-import bs58 from "bs58";
 import { REST, Routes, EmbedBuilder, SlashCommandBuilder } from "discord.js";
 import { db } from "./database.js";
 import { tokenPrices } from "./priceTracker.js";
@@ -17,6 +16,8 @@ import {
 } from "./priceChange/price_change_commands.js";
 import fetch from "node-fetch";
 import {
+  FRESH_ONE_SOL_CHANNEL_ID,
+  FRESH_OVER_ONE_SOL_CHANNE_ID,
   LARGE_BUYS_CHANNEL_ID,
   PREPAID_DEX_CHANNEL_ID,
 } from "./constants/channels.js";
@@ -27,6 +28,8 @@ import {
 const QUICK_CONNECT = new Connection(
   "https://cosmological-evocative-season.solana-mainnet.quiknode.pro/d9d3e63af0e78584d8477901191a985c9a71966b/"
 );
+
+const PURPLE_BITCOIN_ADDRESS = "HfMbPyDdZH6QMaDDUokjYCkHxzjoGBMpgaUvpLWGbF5p";
 
 const setAlertCommand = new SlashCommandBuilder()
   .setName(setAlert)
@@ -212,12 +215,16 @@ async function monitorPrepaidDex(client) {
     commitment: "confirmed",
     maxSupportedTransactionVersion: 0, // Ensures compatibility with transaction version 0
   });
-  const PURPLE_BITCOIN_ADDRESS = "HfMbPyDdZH6QMaDDUokjYCkHxzjoGBMpgaUvpLWGbF5p";
+
   const monitoredAddress = new PublicKey(PURPLE_BITCOIN_ADDRESS);
   const MINIMUM_SOL_BOUGHT = 0; // Minimum SOL threshold
 
   const largestAccounts = await QUICK_CONNECT.getTokenLargestAccounts(
     monitoredAddress
+  );
+  const totalSupply = largestAccounts.value.reduce(
+    (acc, account) => acc + account.uiAmount,
+    0
   );
 
   // Fetch account information for each of these accounts
@@ -235,9 +242,10 @@ async function monitorPrepaidDex(client) {
 
   let holdersList = "Top 10 Holders\n";
   topHolders.slice(0, 10).forEach((holder, index) => {
-    holdersList += `${index + 1}. Address: ${holder.address}, Balance: ${
-      holder.amount
-    }\n`;
+    const percentage = ((holder.amount / totalSupply) * 100).toFixed(2);
+    holdersList += `${index + 1}. ${holder.address
+      .toBase58()
+      .slice(0, 6)} - ${percentage}%\n`;
   });
 
   connection.onLogs(monitoredAddress, async (logs) => {
@@ -294,42 +302,34 @@ async function monitorPrepaidDex(client) {
       // Identify buyer (sender of transaction)
       buyerAddress = transaction.message.accountKeys[0];
 
-      if (solReceived > 3 && tokenPaid > 0) {
-        let channel = await client.channels.fetch(LARGE_BUYS_CHANNEL_ID);
-        if (channel) {
-          const embed = new EmbedBuilder()
-            .setColor(0xff5733)
-            .setTitle("PURPLE BITCOIN (PBTC)")
-            .addFields(
-              {
-                name: "Purchase Information",
-                value: `${buyerAddress.slice(
-                  0,
-                  6
-                )} purchased ${tokenPaid} PBTC\nBought ${solReceived} SOL`,
-              },
-              { name: "Contract Address", value: `${PURPLE_BITCOIN_ADDRESS}` },
-              {
-                name: "Holders",
-                value: `${holdersList}`,
-              },
-              {
-                name: "Social Media",
-                value: "No Twitter\nNo Telegram\nNo Website",
-              },
-              {
-                name: "Useful Links",
-                value:
-                  "[Dev Wallet](https://link-to-dev-wallet)\n[Buy Token](https://link-to-buy-token)",
-              },
-              { name: "Coin Created", value: "5 hours ago" },
-              { name: "Current Market Cap", value: "138604.74$" },
-              { name: "Current Token Price", value: "0.000000805 SOL/token" }
-            )
-            .setTimestamp()
-            .setFooter({ text: "Quick Buy: BULXI | PHOTON | PLONK | BULXRF" });
-          channel.send({ embeds: [embed] });
-        }
+      const { isFresh, fundingSources } = await isFreshWallet(buyerAddress);
+
+      if (!isFresh && solReceived > 3 && tokenPaid > 0) {
+        sendLargeBuysChannel(
+          client,
+          buyerAddress,
+          tokenPaid,
+          solReceived,
+          holdersList
+        );
+      } else if (isFresh && solReceived > 2 && tokenPaid > 0) {
+        sendFreshOverOneSoleChannel(
+          client,
+          fundingSources,
+          buyerAddress,
+          tokenPaid,
+          solReceived,
+          holdersList
+        );
+      } else if (isFresh && solReceived > 1 && tokenPaid > 0) {
+        sendFreshOneSoleChannel(
+          client,
+          fundingSources,
+          buyerAddress,
+          tokenPaid,
+          solReceived,
+          holdersList
+        );
       }
     } catch (error) {
       console.error("Error fetching transaction:", error);
@@ -338,6 +338,271 @@ async function monitorPrepaidDex(client) {
 
   function waitForSeconds(seconds) {
     return new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+  }
+}
+
+async function sendLargeBuysChannel(
+  client,
+  buyerAddress,
+  tokenPaid,
+  solReceived,
+  holdersList
+) {
+  let channel = await client.channels.fetch(LARGE_BUYS_CHANNEL_ID);
+  if (channel) {
+    const embed = new EmbedBuilder()
+      .setColor(0xff5733)
+      .setTitle("PURPLE BITCOIN (PBTC):wave:")
+      .addFields(
+        {
+          name: "Purchase Information 📄",
+          value:
+            "```" +
+            `${buyerAddress.slice(
+              0,
+              6
+            )} purchased ${tokenPaid} PBTC\nBought ${solReceived} SOL` +
+            "```",
+        },
+        {
+          name: "Contract Address 📜",
+          value: "```" + `${PURPLE_BITCOIN_ADDRESS}` + "```",
+        },
+        {
+          name: "Holders 👯‍♀️",
+          value: "```" + `${holdersList}` + "```",
+        },
+        {
+          name: "Social Media 📱",
+          value:
+            "[Twitter](https://x.com)\n[Telegram](https://telegram.com)\n[Website](https://www.purplebitcoin.com)",
+          inline: true,
+        },
+        {
+          name: "Useful Links 📎",
+          value:
+            "[Dev Wallet](https://link-to-dev-wallet)|[Buy Token](https://link-to-buy-token)",
+          inline: true,
+        },
+        { name: "Coin Created 💿", value: "5 hours ago", inline: true },
+        { name: "Bought 💿", value: "4 hours ago", inline: true },
+        { name: "Current Market Cap 💰", value: "138604.74$", inline: true },
+        {
+          name: "Current Token Price",
+          value: "0.000000805 SOL/token",
+          inline: true,
+        }
+      )
+      .setTimestamp()
+      .setFooter({ text: "Quick Buy: BULXI | PHOTON | PLONK | BULXRF" });
+    channel.send({ embeds: [embed] });
+  }
+}
+
+async function sendFreshOverOneSoleChannel(
+  client,
+  fundingSources,
+  buyerAddress,
+  tokenPaid,
+  solReceived,
+  holdersList
+) {
+  let channel = await client.channels.fetch(FRESH_OVER_ONE_SOL_CHANNE_ID);
+  if (channel) {
+    const embed = new EmbedBuilder()
+      .setColor(0xff5733)
+      .setTitle("PURPLE BITCOIN (PBTC)")
+      .addFields(
+        {
+          name: "Purchase Information 📄",
+          value:
+            "```" +
+            `${buyerAddress.slice(
+              0,
+              6
+            )} purchased ${tokenPaid} PBTC\nBought ${solReceived} SOL` +
+            "```",
+        },
+        {
+          name: "Wallet Information 📜",
+          value:
+            "```" +
+            `Wallet\n${buyerAddress}\nfunded from\n${fundingSources[0]?.senderAddress}\nfor ${fundingSources[0]?.fundedAmount} SOL` +
+            "```",
+        },
+        {
+          name: "Contract Address 📜",
+          value: "```" + `${PURPLE_BITCOIN_ADDRESS}` + "```",
+        },
+        {
+          name: "Holders 👯‍♀️",
+          value: `${holdersList}`,
+        },
+        {
+          name: "Social Media 📱",
+          value:
+            "[Twitter](https://x.com)\n[Telegram](https://telegram.com)\n[Website](https://www.purplebitcoin.com)",
+          inline: true,
+        },
+        {
+          name: "Useful Links 📎",
+          value:
+            "[Dev Wallet](https://link-to-dev-wallet)|[Buy Token](https://link-to-buy-token)",
+          inline: true,
+        },
+        { name: "Coin Created 💿", value: "5 hours ago", inline: true },
+        { name: "Funded 💰", value: "4 hours ago", inline: true },
+        { name: "Bought 💿", value: "15 hours ago", inline: true },
+        {
+          name: "Current Market Cap 💰",
+          value: "0.000000805 SOL/token",
+          inline: true,
+        }
+      )
+      .setTimestamp()
+      .setFooter({ text: "Quick Buy: BULXI | PHOTON | PLONK | BULXRF" });
+    channel.send({ embeds: [embed] });
+  }
+}
+
+async function sendFreshOneSoleChannel(
+  client,
+  fundingSources,
+  buyerAddress,
+  tokenPaid,
+  solReceived,
+  holdersList
+) {
+  let channel = await client.channels.fetch(FRESH_ONE_SOL_CHANNEL_ID);
+  if (channel) {
+    const embed = new EmbedBuilder()
+      .setColor(0xff5733)
+      .setTitle("PURPLE BITCOIN (PBTC)")
+      .addFields(
+        {
+          name: "Purchase Information 📄",
+          value:
+            "```" +
+            `${buyerAddress.slice(
+              0,
+              6
+            )} purchased ${tokenPaid} PBTC\nBought ${solReceived} SOL` +
+            "```",
+        },
+        {
+          name: "Wallet Information 📜",
+          value:
+            "```" +
+            `Wallet\n${buyerAddress}\nfunded from\n${fundingSources[0].senderAddress}\nfor ${fundingSources[0].fundedAmount} SOL` +
+            "```",
+        },
+        {
+          name: "Contract Address 📜",
+          value: "```" + `${PURPLE_BITCOIN_ADDRESS}` + "```",
+        },
+        {
+          name: "Holders 👯‍♀️",
+          value: `${holdersList}`,
+        },
+        {
+          name: "Social Media 📱",
+          value:
+            "[Twitter](https://x.com)\n[Telegram](https://telegram.com)\n[Website](https://www.purplebitcoin.com)",
+          inline: true,
+        },
+        {
+          name: "Useful Links 📎",
+          value:
+            "[Dev Wallet](https://link-to-dev-wallet)|[Buy Token](https://link-to-buy-token)",
+          inline: true,
+        },
+        { name: "Coin Created 💿", value: "5 hours ago", inline: true },
+        { name: "Funded 💰", value: "4 hours ago", inline: true },
+        { name: "Bought 💿", value: "15 hours ago", inline: true },
+        {
+          name: "Current Market Cap 💰",
+          value: "0.000000805 SOL/token",
+          inline: true,
+        }
+      )
+      .setTimestamp()
+      .setFooter({ text: "Quick Buy: BULXI | PHOTON | PLONK | BULXRF" });
+    channel.send({ embeds: [embed] });
+  }
+}
+
+async function isFreshWallet(walletAddress) {
+  try {
+    const walletPubKey = new PublicKey(walletAddress);
+    const confirmedSignatures = await QUICK_CONNECT.getSignaturesForAddress(
+      walletPubKey,
+      { limit: 10 }
+    );
+
+    const fundingSources = [];
+    const isFresh = confirmedSignatures.length === 2;
+
+    if (isFresh) {
+      for (let signatureObj of confirmedSignatures) {
+        const url = "https://api.mainnet-beta.solana.com"; // Devnet Solana endpoint
+        const requestBody = {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "getTransaction",
+          params: [
+            signatureObj.signature,
+            { maxSupportedTransactionVersion: 0 },
+          ],
+        };
+
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+        });
+
+        const data = await response.json();
+        const transaction = data.result;
+
+        if (transaction && transaction.transaction.message.accountKeys) {
+          const senderAddress = transaction.transaction.message.accountKeys[0]; // The sender address is typically the first account in the array
+          const receiverAddress =
+            transaction.transaction.message.accountKeys[1]; // The receiver is typically the second account in the array
+
+          // If the wallet address is the receiver, it's the wallet we're monitoring
+          if (receiverAddress === walletAddress) {
+            const fundedAmount =
+              transaction.meta.postBalances[1] -
+              transaction.meta.preBalances[1];
+            fundingSources.push({ senderAddress, fundedAmount }); // Add sender to funding sources
+          }
+        }
+      }
+    }
+
+    return { isFresh, fundingSources }; // If the wallet has no prior transactions, it's fresh
+  } catch (error) {
+    console.error("Error checking wallet freshness:", error);
+    return false;
+  }
+}
+
+async function getTokenPriceFromCoingecko(tokenId) {
+  const url = `https://api.coingecko.com/api/v3/simple/token_price/solana?contract_addresses=${tokenId}&vs_currencies=sol`;
+
+  try {
+    const response = await fetch(url);
+    const data = await response.json();
+
+    if (data[tokenId] && data[tokenId].sol) {
+      console.log(`Token Price in SOL: ${data[tokenId].sol} SOL`);
+    } else {
+      console.log("Price not found for the given token.", data);
+    }
+  } catch (error) {
+    console.error("Error fetching token price from Coingecko:", error);
   }
 }
 

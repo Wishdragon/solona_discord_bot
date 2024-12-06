@@ -20,7 +20,11 @@ import {
 import { handlePriceChangeCommand } from "./priceChange/price_change.js";
 import { BurnHistoryTracker } from "./priceChange/burnHistoryTracker.js";
 import { WalletBalanceTracker } from "./priceChange/walletBalanceTracker.js";
-import { PREPAID_DEX_CHANNEL_ID } from "./constants/channels.js";
+import {
+  FRESH_ONE_SOL_CHANNEL_ID,
+  LARGE_BUYS_CHANNEL_ID,
+  PREPAID_DEX_CHANNEL_ID,
+} from "./constants/channels.js";
 
 const client = new Client({
   intents: [
