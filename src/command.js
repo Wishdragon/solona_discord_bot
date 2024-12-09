@@ -23,10 +23,20 @@ import {
   PREPAID_DEX_CHANNEL_ID,
   TEN_DEV_BURNS_CHANNEL_ID,
 } from "./constants/channels.js";
-import { TOKEN_META_DATA } from "./constants/token_meta_data.js";
+import {
+  TOKEN_META_DATA,
+  DEV_TOKEN_META_DATA,
+} from "./constants/token_meta_data.js";
 
 // Solana mainnet connection
 // const connection = new Connection(clusterApiUrl("mainnet-beta"), "confirmed");
+
+const DEVNET_ENDPOINT = "https://api.devnet.solana.com";
+// const DEV_CONNECTION = new Connection(DEVNET_ENDPOINT);
+const DEV_CONNECTION = new Connection(DEVNET_ENDPOINT, {
+  commitment: "confirmed",
+  maxSupportedTransactionVersion: 0, // Ensures compatibility with transaction version 0
+});
 
 const QUICK_CONNECT = new Connection(
   "https://cosmological-evocative-season.solana-mainnet.quiknode.pro/d9d3e63af0e78584d8477901191a985c9a71966b/"
@@ -250,7 +260,9 @@ async function monitorTransactions(client) {
 
       await waitForSeconds(60);
 
-      const url = "https://api.mainnet-beta.solana.com";
+      // const url = "https://api.mainnet-beta.solana.com";
+      const url =
+        "https://cosmological-evocative-season.solana-mainnet.quiknode.pro/d9d3e63af0e78584d8477901191a985c9a71966b/";
       const requestBody = {
         jsonrpc: "2.0",
         id: 1,
@@ -272,9 +284,13 @@ async function monitorTransactions(client) {
 
         if (!txDetails) return;
 
-        const { meta, transaction } = txDetails;
+        const { meta, transaction, blockTime } = txDetails;
         const preBalances = meta.preBalances;
         const postBalances = meta.postBalances;
+        let transactionDate;
+        if (blockTime) {
+          transactionDate = new Date(blockTime * 1000); // Convert to milliseconds
+        }
 
         // Identify SOL inflow and token outflow
         let solReceived = 0;
@@ -297,7 +313,7 @@ async function monitorTransactions(client) {
         // Identify buyer (sender of transaction)
         buyerAddress = transaction.message.accountKeys[0];
 
-        const { isFresh, fundingSources } = await isFreshWallet(buyerAddress);
+        const { isFresh, fundingSource } = await isFreshWallet(buyerAddress);
 
         if (!isFresh && solReceived > 3 && tokenPaid > 0) {
           sendLargeBuysChannel(
@@ -308,24 +324,30 @@ async function monitorTransactions(client) {
             holdersList,
             token
           );
-        } else if (isFresh && solReceived > 2 && tokenPaid > 0) {
-          sendFreshOverOneSoleChannel(
-            client,
-            fundingSources,
+        } else if (isFresh && solReceived > 0.001 && tokenPaid > 0) {
+          let channel = await client.channels.fetch(
+            FRESH_OVER_ONE_SOL_CHANNE_ID
+          );
+          sendFreshSolChannel(
+            channel,
+            fundingSource,
             buyerAddress,
             tokenPaid,
             solReceived,
             holdersList,
+            transactionDate,
             token
           );
-        } else if (isFresh && solReceived > 1 && tokenPaid > 0) {
-          sendFreshOneSolChannel(
-            client,
-            fundingSources,
+        } else if (isFresh && solReceived > 0.0000000001 && tokenPaid > 0) {
+          let channel = await client.channels.fetch(FRESH_ONE_SOL_CHANNEL_ID);
+          sendFreshSolChannel(
+            channel,
+            fundingSource,
             buyerAddress,
             tokenPaid,
             solReceived,
             holdersList,
+            transactionDate,
             token
           );
         }
@@ -337,90 +359,54 @@ async function monitorTransactions(client) {
 }
 
 async function monitorDeveloperBurns(client) {
-  const connection = new Connection(clusterApiUrl("mainnet-beta"), {
-    commitment: "confirmed",
-    maxSupportedTransactionVersion: 0, // Ensures compatibility with transaction version 0
-  });
-  TOKEN_META_DATA.map(async (token) => {
+  DEV_TOKEN_META_DATA.map(async (token) => {
     const monitoredWallet = new PublicKey(token.updateAuthority);
 
-    connection.onLogs(monitoredWallet, async (logs, ctx) => {
+    DEV_CONNECTION.onLogs(monitoredWallet, async (logs, ctx) => {
       try {
-        // const signature = logs.signature;
+        const signature = logs.signature;
+        console.log(`${token.name} Dev Burn Detected: `, signature);
 
-        const signature =
-          "hQnzcHeYPLM4jv5nZ4fwxQHfRhyjQKRqdvTM17PPS3EehTA6dArSwfL9Sfsv1hwJoc7FLSyHexpkkCPaKsKHJbC";
-        console.log("Dev Transaction", signature);
+        waitForSeconds(60);
 
-        // waitForSeconds(60);
+        const txDetails = await DEV_CONNECTION.getTransaction(signature);
 
-        const url = "https://api.mainnet-beta.solana.com";
-        const requestBody = {
-          jsonrpc: "2.0",
-          id: 1,
-          method: "getTransaction",
-          params: [signature, { maxSupportedTransactionVersion: 0 }],
-        };
+        const { logMessages, preTokenBalances, postTokenBalances } =
+          txDetails.meta;
 
-        const response = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(requestBody),
+        let isBurnt = false;
+        logMessages.forEach((message) => {
+          if (message.includes("BurnChecked")) isBurnt = true;
         });
-
-        const data = await response.json();
-        const txDetails = data.result;
-
-        if (!txDetails) return;
-
-        const message = txDetails.transaction.message;
-
-        // Look for burn instructions in the transaction
-        for (const instruction of message.instructions) {
-          const programId =
-            message.accountKeys[instruction.programIdIndex].toString();
-
-          // Check if the program is the Token Program (standard for token instructions)
-          if (programId === "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") {
-            const data = Buffer.from(instruction.data, "base64");
-
-            // Check if it's a burn instruction (0x0a is the code for burn)
-            if (data[0] === 0x0a) {
-              const sourceAccount =
-                message.accountKeys[instruction.accounts[0]].toString();
-              const mint =
-                message.accountKeys[instruction.accounts[1]].toString();
-              const owner =
-                message.accountKeys[instruction.accounts[2]].toString();
-
-              if (mint === token.mint && owner === token.updateAuthority) {
-                const amountBuffer = data.slice(1, 9); // Burn amount is in the next 8 bytes
-                const amountBurned = amountBuffer.readBigUInt64LE();
-
-                // Fetch total supply to calculate percentage burned
-                const tokenSupply = await getTokenSupply(token.mint);
-                const burnPercentage = (
-                  (amountBurned / tokenSupply) *
-                  100
-                ).toFixed(2);
-                if (burnPercentage < 10)
-                  sendDevBurnChannel(
-                    client,
-                    amountBurned,
-                    burnPercentage,
-                    token
-                  );
-                else
-                  sendTenDevBurnChannel(
-                    client,
-                    amountBurned,
-                    burnPercentage,
-                    token
-                  );
-              }
-            }
+        if (isBurnt) {
+          const tokenSupplyInfo = await DEV_CONNECTION.getTokenSupply(
+            new PublicKey("fFYguHSEEk1cUQs3SMKKTUyoRfQtPLTYvRFCBtnJXgZ")
+          );
+          const tokenSupply = Number(tokenSupplyInfo.value.uiAmount);
+          const burntAmount =
+            preTokenBalances[0].uiTokenAmount.uiAmount -
+            postTokenBalances[0].uiTokenAmount.uiAmount;
+          const burnPercentage =
+            (burntAmount / (tokenSupply + burntAmount)) * 100;
+          const transactionDate = new Date(txDetails.blockTime * 1000);
+          if (burnPercentage < 0.003) {
+            let channel = await client.channels.fetch(DEV_BURNS_CHANNEL_ID);
+            sendDevBurnChannel(
+              channel,
+              burntAmount,
+              burnPercentage,
+              token,
+              transactionDate
+            );
+          } else {
+            let channel = await client.channels.fetch(TEN_DEV_BURNS_CHANNEL_ID);
+            sendDevBurnChannel(
+              channel,
+              burntAmount,
+              burnPercentage,
+              token,
+              transactionDate
+            );
           }
         }
       } catch (error) {
@@ -442,8 +428,13 @@ function waitForSeconds(seconds) {
   return new Promise((resolve) => setTimeout(resolve, seconds * 1000));
 }
 
-async function sendDevBurnChannel(client, amountBurned, burnPercentage, token) {
-  let channel = await client.channels.fetch(DEV_BURNS_CHANNEL_ID);
+async function sendDevBurnChannel(
+  channel,
+  amountBurned,
+  burnPercentage,
+  token,
+  transactionDate
+) {
   if (channel) {
     const embed = new EmbedBuilder()
       .setColor(0xff5733)
@@ -454,7 +445,7 @@ async function sendDevBurnChannel(client, amountBurned, burnPercentage, token) {
           name: "Token Information 📄",
           value:
             "```" +
-            `Dev has burnt ${amountBurned} (${burnPercentage}) ${token.symbol} tokens from ${token.name}!` +
+            `Dev has burnt ${amountBurned} (${burnPercentage}%) ${token.symbol} tokens from ${token.name}!` +
             "```",
         },
         {
@@ -467,7 +458,9 @@ async function sendDevBurnChannel(client, amountBurned, burnPercentage, token) {
         },
         {
           name: "Social Media 📱",
-          value: `[Twitter](${token.twitter})\n[Telegram](${token.telegram})\n[Website](${token.website})`,
+          value: `${token.twitter ? "[Twitter](" + token.twitter + ")" : ""}\n${
+            token.telegram ? "[Telegram](" + token.telegram + ")" : ""
+          }\n${token.website ? "[Website](" + token.website + ")" : ""}`,
           inline: true,
         },
         {
@@ -476,7 +469,18 @@ async function sendDevBurnChannel(client, amountBurned, burnPercentage, token) {
             "[Dev Wallet](https://link-to-dev-wallet) | [Buy Token](https://link-to-buy-token)",
           inline: true,
         },
-        { name: "Burnt 🔥", value: "5 hours ago", inline: true },
+        {
+          name: "Burnt 🔥",
+          value: `${transactionDate.toLocaleString("en-US", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false, // 24-hour format
+          })}`,
+          inline: true,
+        },
         { name: "Current Market Cap 💰", value: "138604.74$" }
       )
       .setTimestamp();
@@ -589,36 +593,36 @@ async function sendLargeBuysChannel(
   }
 }
 
-async function sendFreshOverOneSoleChannel(
-  client,
-  fundingSources,
+async function sendFreshSolChannel(
+  channel,
+  fundingSource,
   buyerAddress,
   tokenPaid,
   solReceived,
   holdersList,
+  transactionDate,
   token
 ) {
-  let channel = await client.channels.fetch(FRESH_OVER_ONE_SOL_CHANNE_ID);
   if (channel) {
     const embed = new EmbedBuilder()
       .setColor(0xff5733)
       .setTitle(`${token.name.toUpperCase()} (${token.symbol})`)
+      .setThumbnail(token.image)
       .addFields(
         {
           name: "Purchase Information 📄",
           value:
             "```" +
-            `${buyerAddress.slice(
-              0,
-              6
-            )} purchased ${tokenPaid} PBTC\nBought ${solReceived} SOL` +
+            `${buyerAddress.slice(0, 6)} purchased ${Math.round(tokenPaid)} ${
+              token.name
+            }\nBought ${solReceived} SOL` +
             "```",
         },
         {
-          name: "Wallet Information 📜",
+          name: "Wallet Information 💰",
           value:
             "```" +
-            `Wallet\n${buyerAddress}\nfunded from\n${fundingSources[0]?.senderAddress}\nfor ${fundingSources[0]?.fundedAmount} SOL` +
+            `Wallet\n${buyerAddress}\nfunded from\n${fundingSource?.senderAddress}\nfor ${fundingSource?.fundedAmount} SOL` +
             "```",
         },
         {
@@ -626,12 +630,14 @@ async function sendFreshOverOneSoleChannel(
           value: "```" + `${token.mint}` + "```",
         },
         {
-          name: "Holders 👯‍♀️",
+          name: "Holders 👯",
           value: `${holdersList}`,
         },
         {
           name: "Social Media 📱",
-          value: `[Twitter](${token.twitter})\n[Telegram](${token.telegram})\n[Website](${token.website})`,
+          value: `${token.twitter ? "[Twitter](" + token.twitter + ")" : ""}\n${
+            token.telegram ? "[Telegram](" + token.telegram + ")" : ""
+          }\n${token.website ? "[Website](" + token.website + ")" : ""}`,
           inline: true,
         },
         {
@@ -641,72 +647,30 @@ async function sendFreshOverOneSoleChannel(
           inline: true,
         },
         { name: "Coin Created 💿", value: "5 hours ago", inline: true },
-        { name: "Funded 💰", value: "4 hours ago", inline: true },
-        { name: "Bought 💿", value: "15 hours ago", inline: true },
         {
-          name: "Current Market Cap 💰",
-          value: "0.000000805 SOL/token",
-          inline: true,
-        }
-      )
-      .setTimestamp();
-    channel.send({ embeds: [embed] });
-  }
-}
-
-async function sendFreshOneSolChannel(
-  client,
-  fundingSources,
-  buyerAddress,
-  tokenPaid,
-  solReceived,
-  holdersList
-) {
-  let channel = await client.channels.fetch(FRESH_ONE_SOL_CHANNEL_ID);
-  if (channel) {
-    const embed = new EmbedBuilder()
-      .setColor(0xff5733)
-      .setTitle(`${token.name.toUpperCase()} (${token.symbol})`)
-      .addFields(
-        {
-          name: "Purchase Information 📄",
-          value:
-            "```" +
-            `${buyerAddress.slice(
-              0,
-              6
-            )} purchased ${tokenPaid} PBTC\nBought ${solReceived} SOL` +
-            "```",
-        },
-        {
-          name: "Wallet Information 📜",
-          value:
-            "```" +
-            `Wallet\n${buyerAddress}\nfunded from\n${fundingSources[0].senderAddress}\nfor ${fundingSources[0].fundedAmount} SOL` +
-            "```",
-        },
-        {
-          name: "Contract Address 📜",
-          value: "```" + `${token.mint}` + "```",
-        },
-        {
-          name: "Holders 👯‍♀️",
-          value: `${holdersList}`,
-        },
-        {
-          name: "Social Media 📱",
-          value: `[Twitter](${token.twitter})\n[Telegram](${token.telegram})\n[Website](${token.website})`,
+          name: "Funded 💰",
+          value: `${fundingSource?.transactionDate.toLocaleString("en-US", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false, // 24-hour format
+          })}`,
           inline: true,
         },
         {
-          name: "Useful Links 📎",
-          value:
-            "[Dev Wallet](https://link-to-dev-wallet)|[Buy Token](https://link-to-buy-token)",
+          name: "Bought 💿",
+          value: `${transactionDate.toLocaleString("en-US", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false, // 24-hour format
+          })}`,
           inline: true,
         },
-        { name: "Coin Created 💿", value: "5 hours ago", inline: true },
-        { name: "Funded 💰", value: "4 hours ago", inline: true },
-        { name: "Bought 💿", value: "15 hours ago", inline: true },
         {
           name: "Current Market Cap 💰",
           value: "0.000000805 SOL/token",
@@ -723,15 +687,20 @@ async function isFreshWallet(walletAddress) {
     const walletPubKey = new PublicKey(walletAddress);
     const confirmedSignatures = await QUICK_CONNECT.getSignaturesForAddress(
       walletPubKey,
-      { limit: 10 }
+      { limit: 100 }
     );
 
     const fundingSources = [];
-    const isFresh = confirmedSignatures.length === 2;
+    let isFresh = false;
+    if (confirmedSignatures.length < 75) {
+      isFresh = true;
+    }
 
     if (isFresh) {
       for (let signatureObj of confirmedSignatures) {
-        const url = "https://api.mainnet-beta.solana.com"; // Devnet Solana endpoint
+        // const url = "https://api.mainnet-beta.solana.com"; // Devnet Solana endpoint
+        const url =
+          "https://cosmological-evocative-season.solana-mainnet.quiknode.pro/d9d3e63af0e78584d8477901191a985c9a71966b/";
         const requestBody = {
           jsonrpc: "2.0",
           id: 1,
@@ -760,16 +729,41 @@ async function isFreshWallet(walletAddress) {
 
           // If the wallet address is the receiver, it's the wallet we're monitoring
           if (receiverAddress === walletAddress) {
-            const fundedAmount =
-              transaction.meta.postBalances[1] -
-              transaction.meta.preBalances[1];
-            fundingSources.push({ senderAddress, fundedAmount }); // Add sender to funding sources
+            const fundedAmount = Math.abs(
+              (transaction.meta.postBalances[1] -
+                transaction.meta.preBalances[1]) /
+                1e9
+            );
+
+            let transactionDate;
+            const blockTime = transaction.blockTime;
+            if (blockTime) {
+              transactionDate = new Date(blockTime * 1000);
+            } else {
+              console.log("Block time is not available for this transaction.");
+            }
+            fundingSources.push({
+              senderAddress,
+              fundedAmount,
+              transactionDate,
+            }); // Add sender to funding sources
           }
         }
       }
     }
 
-    return { isFresh, fundingSources }; // If the wallet has no prior transactions, it's fresh
+    let fundingSource;
+    if (fundingSources.length > 0) {
+      let fundingDate = fundingSources[0].transactionDate;
+      for (let i = 0; i < fundingSources.length; i++) {
+        if (fundingSources[i].transactionDate < fundingDate) {
+          fundingDate = fundingSources[i].transactionDate;
+          fundingSource = fundingSources[i];
+        }
+      }
+    } else isFresh = false;
+
+    return { isFresh, fundingSource }; // If the wallet has no prior transactions, it's fresh
   } catch (error) {
     console.error("Error checking wallet freshness:", error);
     return false;

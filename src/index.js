@@ -36,8 +36,6 @@ const client = new Client({
   ],
 });
 
-const TOKEN_LAMBO_ADDRESS = "So11111111111111111111111111111111111111112";
-
 async function init() {
   // initializeDatabase();
   // startPriceTracking();
@@ -89,7 +87,6 @@ async function init() {
         const price = options.get("price").value;
         const direction = options.get("direction").value;
         await handleSetAlert(interaction, token, price, direction);
-
         break;
       case priceChange:
         handlePriceChangeCommand(interaction);
