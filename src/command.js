@@ -1,7 +1,8 @@
 import dotenv from "dotenv/config";
 import { Connection, PublicKey, clusterApiUrl } from "@solana/web3.js";
 import { REST, Routes, EmbedBuilder, SlashCommandBuilder } from "discord.js";
-import { db } from "./database.js";
+import { TokenListProvider } from "@solana/spl-token-registry";
+import { db, fetchMetaDataFromDB, storeMetaDataToDB } from "./util/database.js";
 import { tokenPrices } from "./priceTracker.js";
 import {
   priceList,
@@ -13,7 +14,8 @@ import {
   burnHistoryCommand,
   priceChangeCommand,
   checkBalanceCommand,
-} from "./priceChange/price_change_commands.js";
+} from "./slashCommands/price_change_commands.js";
+import { registerTokenCommand } from "./slashCommands/registerToken.js";
 import fetch from "node-fetch";
 import {
   DEV_BURNS_CHANNEL_ID,
@@ -27,6 +29,7 @@ import {
   TOKEN_META_DATA,
   DEV_TOKEN_META_DATA,
 } from "./constants/token_meta_data.js";
+import { getTokenMetadata } from "./util/utils.js";
 
 // Solana mainnet connection
 // const connection = new Connection(clusterApiUrl("mainnet-beta"), "confirmed");
@@ -84,6 +87,7 @@ const commands = [
   priceChangeCommand,
   burnHistoryCommand,
   checkBalanceCommand,
+  registerTokenCommand,
 ];
 
 const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
@@ -223,6 +227,27 @@ async function handleMyAlerts(message) {
   );
 }
 
+async function handleRegisterToken(interaction, mint) {
+  try {
+    const metaData = await getTokenMetadata(mint);
+    const message = await storeMetaDataToDB(metaData);
+    await interaction.reply({
+      content: message,
+      ephemeral: true,
+    });
+  } catch (error) {
+    console.error("handleRegisterToken():", error);
+  }
+}
+
+async function handleMonitoringTransactions(client) {
+  try {
+    const metaData = await fetchMetaDataFromDB();
+    console.log("META", metaData);
+  } catch (error) {
+    console.error("handleRegisterToken():", error);
+  }
+}
 async function monitorTransactions(client) {
   const connection = new Connection(clusterApiUrl("mainnet-beta"), {
     commitment: "confirmed",
@@ -361,19 +386,14 @@ async function monitorTransactions(client) {
 async function monitorDeveloperBurns(client) {
   DEV_TOKEN_META_DATA.map(async (token) => {
     const monitoredWallet = new PublicKey(token.updateAuthority);
-
     DEV_CONNECTION.onLogs(monitoredWallet, async (logs, ctx) => {
       try {
         const signature = logs.signature;
         console.log(`${token.name} Dev Burn Detected: `, signature);
-
         waitForSeconds(60);
-
         const txDetails = await DEV_CONNECTION.getTransaction(signature);
-
         const { logMessages, preTokenBalances, postTokenBalances } =
           txDetails.meta;
-
         let isBurnt = false;
         logMessages.forEach((message) => {
           if (message.includes("BurnChecked")) isBurnt = true;
@@ -414,14 +434,6 @@ async function monitorDeveloperBurns(client) {
       }
     });
   });
-}
-
-// Function to fetch total token supply
-async function getTokenSupply(tokenAddress) {
-  const tokenSupplyInfo = await QUICK_CONNECT.getTokenSupply(
-    new PublicKey(tokenAddress)
-  );
-  return Number(tokenSupplyInfo.value.amount); // Returns total supply as a number
 }
 
 function waitForSeconds(seconds) {
@@ -774,6 +786,8 @@ export {
   handleSetAlert,
   handlePriceList,
   handleMyAlerts,
+  handleRegisterToken,
+  handleMonitoringTransactions,
   monitorTransactions,
   monitorDeveloperBurns,
 };

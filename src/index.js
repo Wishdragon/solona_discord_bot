@@ -4,8 +4,10 @@ import { Keypair, clusterApiUrl, Connection, PublicKey } from "@solana/web3.js";
 import {
   handlePriceList,
   handleSetAlert,
+  handleRegisterToken,
   monitorTransactions,
   monitorDeveloperBurns,
+  handleMonitoringTransactions,
 } from "./command.js";
 import {
   priceList,
@@ -17,15 +19,18 @@ import {
   optionToken,
   burnHistoryString,
   checkBalanceString,
+  registerToken,
+  mintAddress,
 } from "./constants/command_name.js";
-import { handlePriceChangeCommand } from "./priceChange/price_change.js";
-import { BurnHistoryTracker } from "./priceChange/burnHistoryTracker.js";
-import { WalletBalanceTracker } from "./priceChange/walletBalanceTracker.js";
+import { handlePriceChangeCommand } from "./slashCommands/price_change.js";
+import { BurnHistoryTracker } from "./slashCommands/burnHistoryTracker.js";
+import { WalletBalanceTracker } from "./slashCommands/walletBalanceTracker.js";
 import {
   FRESH_ONE_SOL_CHANNEL_ID,
   LARGE_BUYS_CHANNEL_ID,
   PREPAID_DEX_CHANNEL_ID,
 } from "./constants/channels.js";
+import { initializeDatabase } from "./util/database.js";
 
 const client = new Client({
   intents: [
@@ -37,7 +42,7 @@ const client = new Client({
 });
 
 async function init() {
-  // initializeDatabase();
+  initializeDatabase();
   // startPriceTracking();
 
   let keypair = Keypair.generate();
@@ -56,8 +61,10 @@ async function init() {
   client.once("ready", async () => {
     console.log(`Logged in as ${client.user.tag}`);
 
-    monitorTransactions(client);
-    monitorDeveloperBurns(client);
+    handleMonitoringTransactions(client);
+
+    // monitorTransactions(client);
+    // monitorDeveloperBurns(client);
   });
 
   client.on("interactionCreate", async (interaction) => {
@@ -96,6 +103,11 @@ async function init() {
         break;
       case checkBalanceString:
         await walletBalance.handleWalletBalanceCommand(interaction);
+        break;
+      case registerToken:
+        const mint = options.get(mintAddress).value;
+        await handleRegisterToken(interaction, mint);
+        console.log("token mint :::", mint);
         break;
       default:
         break;

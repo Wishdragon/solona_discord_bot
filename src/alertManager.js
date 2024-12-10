@@ -1,5 +1,5 @@
 import { EmbedBuilder } from "discord.js";
-import { db } from "./database.js";
+import { db } from "./util/database.js";
 
 async function checkAlerts(tokenPrices) {
   db.all(

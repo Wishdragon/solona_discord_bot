@@ -11,6 +11,8 @@ const walletString = "wallet";
 const currencyOptionString = "currency";
 const disconnectWalletString = "disconnect-wallet";
 const walletInfoString = "wallet-info";
+const registerToken = "register-token";
+const mintAddress = "mint-address";
 
 export {
   priceList,
@@ -26,4 +28,6 @@ export {
   currencyOptionString,
   disconnectWalletString,
   walletInfoString,
+  registerToken,
+  mintAddress,
 };
