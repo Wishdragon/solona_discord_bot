@@ -130,9 +130,8 @@ const DEV_TOKEN_META_DATA = [
     isMutable: 0,
     editionNonce: 255,
     tokenStandard: 2,
-    description: "Galaxy coin is just for development 🐧",
-    image:
-      "https://ipfs.io/ipfs/QmdJLmrEpSu31wYTLKhikxKbL6QGbTLQcyVourWLMszFtL",
+    description: "Solana Test Token is just for development 🐧",
+    image: "",
     showName: true,
     createdOn: "https://pump.fun",
   },

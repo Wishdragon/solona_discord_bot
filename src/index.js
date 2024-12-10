@@ -5,7 +5,7 @@ import {
   handlePriceList,
   handleSetAlert,
   handleRegisterToken,
-  monitorTransactions,
+  monitorTransaction,
   monitorDeveloperBurns,
   handleMonitoringTransactions,
 } from "./command.js";
@@ -62,9 +62,7 @@ async function init() {
     console.log(`Logged in as ${client.user.tag}`);
 
     handleMonitoringTransactions(client);
-
-    // monitorTransactions(client);
-    // monitorDeveloperBurns(client);
+    monitorDeveloperBurns(client);
   });
 
   client.on("interactionCreate", async (interaction) => {
@@ -106,8 +104,7 @@ async function init() {
         break;
       case registerToken:
         const mint = options.get(mintAddress).value;
-        await handleRegisterToken(interaction, mint);
-        console.log("token mint :::", mint);
+        await handleRegisterToken(interaction, mint, client);
         break;
       default:
         break;

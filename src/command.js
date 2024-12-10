@@ -29,7 +29,14 @@ import {
   TOKEN_META_DATA,
   DEV_TOKEN_META_DATA,
 } from "./constants/token_meta_data.js";
-import { getTokenMetadata } from "./util/utils.js";
+import {
+  extractInformation,
+  getTokenCreationTime,
+  getTokenMetadata,
+  getTopHolders,
+  isFreshWallet,
+  timeDifference,
+} from "./util/utils.js";
 
 // Solana mainnet connection
 // const connection = new Connection(clusterApiUrl("mainnet-beta"), "confirmed");
@@ -44,6 +51,11 @@ const DEV_CONNECTION = new Connection(DEVNET_ENDPOINT, {
 const QUICK_CONNECT = new Connection(
   "https://cosmological-evocative-season.solana-mainnet.quiknode.pro/d9d3e63af0e78584d8477901191a985c9a71966b/"
 );
+
+const connection = new Connection(clusterApiUrl("mainnet-beta"), {
+  commitment: "confirmed",
+  maxSupportedTransactionVersion: 0,
+});
 
 const PURPLE_BITCOIN_ADDRESS = "HfMbPyDdZH6QMaDDUokjYCkHxzjoGBMpgaUvpLWGbF5p";
 
@@ -227,14 +239,17 @@ async function handleMyAlerts(message) {
   );
 }
 
-async function handleRegisterToken(interaction, mint) {
+async function handleRegisterToken(interaction, mint, client) {
   try {
     const metaData = await getTokenMetadata(mint);
-    const message = await storeMetaDataToDB(metaData);
+    const { message, success } = await storeMetaDataToDB(metaData);
     await interaction.reply({
       content: message,
       ephemeral: true,
     });
+    if (success) {
+      monitorTransaction(metaData, client);
+    }
   } catch (error) {
     console.error("handleRegisterToken():", error);
   }
@@ -243,49 +258,23 @@ async function handleRegisterToken(interaction, mint) {
 async function handleMonitoringTransactions(client) {
   try {
     const metaData = await fetchMetaDataFromDB();
-    console.log("META", metaData);
+    metaData.forEach(async (token) => {
+      monitorTransaction(token, client);
+    });
   } catch (error) {
     console.error("handleRegisterToken():", error);
   }
 }
-async function monitorTransactions(client) {
-  const connection = new Connection(clusterApiUrl("mainnet-beta"), {
-    commitment: "confirmed",
-    maxSupportedTransactionVersion: 0, // Ensures compatibility with transaction version 0
-  });
-  TOKEN_META_DATA.map(async (token) => {
-    const monitoredAddress = new PublicKey(token.mint);
 
-    const largestAccounts = await QUICK_CONNECT.getTokenLargestAccounts(
-      monitoredAddress
-    );
-    const totalSupply = largestAccounts.value.reduce(
-      (acc, account) => acc + account.uiAmount,
-      0
-    );
-
-    const accountInfoPromises = largestAccounts.value.map(async (account) => {
-      return {
-        address: account.address,
-        amount: account.uiAmount,
-      };
-    });
-    const topHolders = await Promise.all(accountInfoPromises);
-    let holdersList = "Top 10 Holders\n";
-    topHolders.slice(0, 10).forEach((holder, index) => {
-      const percentage = ((holder.amount / totalSupply) * 100).toFixed(2);
-      holdersList += `${index + 1}. ${holder.address
-        .toBase58()
-        .slice(0, 6)} - ${percentage}%\n`;
-    });
-
-    connection.onLogs(monitoredAddress, async (logs) => {
+async function monitorTransaction(token, client) {
+  const monitoredAddress = new PublicKey(token.mint);
+  QUICK_CONNECT.onLogs(monitoredAddress, async (logs) => {
+    try {
       const signature = logs.signature;
-      console.log(`${token.name}:`, signature);
+      console.log(`${token.data.name}:`, signature);
 
       await waitForSeconds(60);
 
-      // const url = "https://api.mainnet-beta.solana.com";
       const url =
         "https://cosmological-evocative-season.solana-mainnet.quiknode.pro/d9d3e63af0e78584d8477901191a985c9a71966b/";
       const requestBody = {
@@ -295,91 +284,64 @@ async function monitorTransactions(client) {
         params: [signature, { maxSupportedTransactionVersion: 0 }],
       };
 
-      try {
-        const response = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(requestBody),
-        });
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
 
-        const data = await response.json();
-        const txDetails = data.result;
+      const data = await response.json();
+      const txDetails = data.result;
 
-        if (!txDetails) return;
+      if (!txDetails) return;
 
-        const { meta, transaction, blockTime } = txDetails;
-        const preBalances = meta.preBalances;
-        const postBalances = meta.postBalances;
-        let transactionDate;
-        if (blockTime) {
-          transactionDate = new Date(blockTime * 1000); // Convert to milliseconds
-        }
+      const { buyerAddress, solReceived, tokenPaid, txDateString } =
+        extractInformation(txDetails, monitoredAddress);
+      const { isFresh, fundingSource } = await isFreshWallet(buyerAddress);
 
-        // Identify SOL inflow and token outflow
-        let solReceived = 0;
-        let tokenPaid = 0;
-        let buyerAddress = "";
+      const holdersList = await getTopHolders(monitoredAddress);
 
-        meta.preTokenBalances.forEach((preTokenBalance, index) => {
-          const postTokenBalance = meta.postTokenBalances[index];
-
-          if (preTokenBalance.mint === monitoredAddress.toBase58()) {
-            tokenPaid = Math.abs(
-              (preTokenBalance.uiTokenAmount.uiAmount || 0) -
-                (postTokenBalance.uiTokenAmount.uiAmount || 0)
-            );
-          }
-        });
-
-        solReceived = Math.abs((postBalances[0] - preBalances[0]) / 1e9); // Lamports to SOL
-
-        // Identify buyer (sender of transaction)
-        buyerAddress = transaction.message.accountKeys[0];
-
-        const { isFresh, fundingSource } = await isFreshWallet(buyerAddress);
-
-        if (!isFresh && solReceived > 3 && tokenPaid > 0) {
-          sendLargeBuysChannel(
-            client,
-            buyerAddress,
-            tokenPaid,
-            solReceived,
-            holdersList,
-            token
-          );
-        } else if (isFresh && solReceived > 0.001 && tokenPaid > 0) {
-          let channel = await client.channels.fetch(
-            FRESH_OVER_ONE_SOL_CHANNE_ID
-          );
-          sendFreshSolChannel(
-            channel,
-            fundingSource,
-            buyerAddress,
-            tokenPaid,
-            solReceived,
-            holdersList,
-            transactionDate,
-            token
-          );
-        } else if (isFresh && solReceived > 0.0000000001 && tokenPaid > 0) {
-          let channel = await client.channels.fetch(FRESH_ONE_SOL_CHANNEL_ID);
-          sendFreshSolChannel(
-            channel,
-            fundingSource,
-            buyerAddress,
-            tokenPaid,
-            solReceived,
-            holdersList,
-            transactionDate,
-            token
-          );
-        }
-      } catch (error) {
-        console.error("Error fetching transaction:", error);
+      if (!isFresh && solReceived > 3 && tokenPaid > 0) {
+        let channel = await client.channels.fetch(LARGE_BUYS_CHANNEL_ID);
+        sendLargeBuysChannel(
+          channel,
+          buyerAddress,
+          tokenPaid,
+          solReceived,
+          holdersList,
+          txDateString,
+          token
+        );
+      } else if (isFresh && solReceived > 0.001 && tokenPaid > 0) {
+        let channel = await client.channels.fetch(FRESH_OVER_ONE_SOL_CHANNE_ID);
+        sendFreshSolChannel(
+          channel,
+          fundingSource,
+          buyerAddress,
+          tokenPaid,
+          solReceived,
+          holdersList,
+          txDateString,
+          token
+        );
+      } else if (isFresh && solReceived > 0.0000000001 && tokenPaid > 0) {
+        let channel = await client.channels.fetch(FRESH_ONE_SOL_CHANNEL_ID);
+        sendFreshSolChannel(
+          channel,
+          fundingSource,
+          buyerAddress,
+          tokenPaid,
+          solReceived,
+          holdersList,
+          txDateString,
+          token
+        );
       }
-    });
+    } catch (error) {
+      console.error("Error fetching transaction:", error);
+    }
   });
 }
 
@@ -548,28 +510,27 @@ async function sendTenDevBurnChannel(
 }
 
 async function sendLargeBuysChannel(
-  client,
+  channel,
   buyerAddress,
   tokenPaid,
   solReceived,
   holdersList,
+  txDateString,
   token
 ) {
-  let channel = await client.channels.fetch(LARGE_BUYS_CHANNEL_ID);
   if (channel) {
     const embed = new EmbedBuilder()
       .setColor(0xff5733)
-      .setTitle(`${token.name.toUpperCase()} (${token.symbol})`)
-      .setThumbnail(token.image)
+      .setTitle(`${token.data.name.toUpperCase()} (${token.data.symbol})`)
+      .setThumbnail(token.data.image)
       .addFields(
         {
           name: "Purchase Information 📄",
           value:
             "```" +
-            `${buyerAddress.slice(
-              0,
-              6
-            )} purchased ${tokenPaid} PBTC\nBought ${solReceived} SOL` +
+            `${buyerAddress.slice(0, 6)} purchased ${tokenPaid} ${
+              token.data.symbol
+            }\nBought ${solReceived} SOL` +
             "```",
         },
         {
@@ -582,7 +543,13 @@ async function sendLargeBuysChannel(
         },
         {
           name: "Social Media 📱",
-          value: `[Twitter](${token.twitter})\n[Telegram](${token.telegram})\n[Website](${token.website})`,
+          value: `${
+            token.data.twitter ? "[Twitter](" + token.data.twitter + ")" : ""
+          }\n${
+            token.data.telegram ? "[Telegram](" + token.data.telegram + ")" : ""
+          }\n${
+            token.data.website ? "[Website](" + token.data.website + ")" : ""
+          }`,
           inline: true,
         },
         {
@@ -592,7 +559,7 @@ async function sendLargeBuysChannel(
           inline: true,
         },
         { name: "Coin Created 💿", value: "5 hours ago", inline: true },
-        { name: "Bought 💿", value: "4 hours ago", inline: true },
+        { name: "Bought 💿", value: txDateString, inline: true },
         { name: "Current Market Cap 💰", value: "138604.74$", inline: true },
         {
           name: "Current Token Price",
@@ -618,15 +585,15 @@ async function sendFreshSolChannel(
   if (channel) {
     const embed = new EmbedBuilder()
       .setColor(0xff5733)
-      .setTitle(`${token.name.toUpperCase()} (${token.symbol})`)
-      .setThumbnail(token.image)
+      .setTitle(`${token.data.name.toUpperCase()} (${token.data.symbol})`)
+      .setThumbnail(token.data.image)
       .addFields(
         {
           name: "Purchase Information 📄",
           value:
             "```" +
             `${buyerAddress.slice(0, 6)} purchased ${Math.round(tokenPaid)} ${
-              token.name
+              token.data.name
             }\nBought ${solReceived} SOL` +
             "```",
         },
@@ -643,13 +610,17 @@ async function sendFreshSolChannel(
         },
         {
           name: "Holders 👯",
-          value: `${holdersList}`,
+          value: "```" + `${holdersList}` + "```",
         },
         {
           name: "Social Media 📱",
-          value: `${token.twitter ? "[Twitter](" + token.twitter + ")" : ""}\n${
-            token.telegram ? "[Telegram](" + token.telegram + ")" : ""
-          }\n${token.website ? "[Website](" + token.website + ")" : ""}`,
+          value: `${
+            token.data.twitter ? "[Twitter](" + token.data.twitter + ")" : ""
+          }\n${
+            token.data.telegram ? "[Telegram](" + token.data.telegram + ")" : ""
+          }\n${
+            token.data.website ? "[Website](" + token.data.website + ")" : ""
+          }`,
           inline: true,
         },
         {
@@ -661,26 +632,12 @@ async function sendFreshSolChannel(
         { name: "Coin Created 💿", value: "5 hours ago", inline: true },
         {
           name: "Funded 💰",
-          value: `${fundingSource?.transactionDate.toLocaleString("en-US", {
-            year: "numeric",
-            month: "2-digit",
-            day: "2-digit",
-            hour: "2-digit",
-            minute: "2-digit",
-            hour12: false, // 24-hour format
-          })}`,
+          value: `${fundingSource?.dateString}`,
           inline: true,
         },
         {
           name: "Bought 💿",
-          value: `${transactionDate.toLocaleString("en-US", {
-            year: "numeric",
-            month: "2-digit",
-            day: "2-digit",
-            hour: "2-digit",
-            minute: "2-digit",
-            hour12: false, // 24-hour format
-          })}`,
+          value: `${transactionDate}`,
           inline: true,
         },
         {
@@ -694,100 +651,12 @@ async function sendFreshSolChannel(
   }
 }
 
-async function isFreshWallet(walletAddress) {
-  try {
-    const walletPubKey = new PublicKey(walletAddress);
-    const confirmedSignatures = await QUICK_CONNECT.getSignaturesForAddress(
-      walletPubKey,
-      { limit: 100 }
-    );
-
-    const fundingSources = [];
-    let isFresh = false;
-    if (confirmedSignatures.length < 75) {
-      isFresh = true;
-    }
-
-    if (isFresh) {
-      for (let signatureObj of confirmedSignatures) {
-        // const url = "https://api.mainnet-beta.solana.com"; // Devnet Solana endpoint
-        const url =
-          "https://cosmological-evocative-season.solana-mainnet.quiknode.pro/d9d3e63af0e78584d8477901191a985c9a71966b/";
-        const requestBody = {
-          jsonrpc: "2.0",
-          id: 1,
-          method: "getTransaction",
-          params: [
-            signatureObj.signature,
-            { maxSupportedTransactionVersion: 0 },
-          ],
-        };
-
-        const response = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(requestBody),
-        });
-
-        const data = await response.json();
-        const transaction = data.result;
-
-        if (transaction && transaction.transaction.message.accountKeys) {
-          const senderAddress = transaction.transaction.message.accountKeys[0]; // The sender address is typically the first account in the array
-          const receiverAddress =
-            transaction.transaction.message.accountKeys[1]; // The receiver is typically the second account in the array
-
-          // If the wallet address is the receiver, it's the wallet we're monitoring
-          if (receiverAddress === walletAddress) {
-            const fundedAmount = Math.abs(
-              (transaction.meta.postBalances[1] -
-                transaction.meta.preBalances[1]) /
-                1e9
-            );
-
-            let transactionDate;
-            const blockTime = transaction.blockTime;
-            if (blockTime) {
-              transactionDate = new Date(blockTime * 1000);
-            } else {
-              console.log("Block time is not available for this transaction.");
-            }
-            fundingSources.push({
-              senderAddress,
-              fundedAmount,
-              transactionDate,
-            }); // Add sender to funding sources
-          }
-        }
-      }
-    }
-
-    let fundingSource;
-    if (fundingSources.length > 0) {
-      let fundingDate = fundingSources[0].transactionDate;
-      for (let i = 0; i < fundingSources.length; i++) {
-        if (fundingSources[i].transactionDate < fundingDate) {
-          fundingDate = fundingSources[i].transactionDate;
-          fundingSource = fundingSources[i];
-        }
-      }
-    } else isFresh = false;
-
-    return { isFresh, fundingSource }; // If the wallet has no prior transactions, it's fresh
-  } catch (error) {
-    console.error("Error checking wallet freshness:", error);
-    return false;
-  }
-}
-
 export {
   handleSetAlert,
   handlePriceList,
   handleMyAlerts,
   handleRegisterToken,
   handleMonitoringTransactions,
-  monitorTransactions,
+  monitorTransaction,
   monitorDeveloperBurns,
 };

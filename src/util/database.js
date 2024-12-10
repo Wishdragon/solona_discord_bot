@@ -36,11 +36,17 @@ async function storeMetaDataToDB(metaData) {
     const row = await getRowByMint(metaData.mint);
 
     if (row) {
-      return `${metaData.data.name} (${metaData.data.symbol}) already exists.`;
+      return {
+        message: `${metaData.data.name} (${metaData.data.symbol}) already exists.`,
+        success: false,
+      };
     } else {
       const jsonString = JSON.stringify(metaData);
       const lastID = await insertData(jsonString, metaData.mint);
-      return `${metaData.data.name} (${metaData.data.symbol}) registered successfuly.`;
+      return {
+        message: `${metaData.data.name} (${metaData.data.symbol}) registered successfuly.`,
+        success: true,
+      };
     }
   } catch (error) {
     console.error("Error:", error.message);
