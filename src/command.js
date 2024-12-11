@@ -23,7 +23,10 @@ import {
   FRESH_OVER_ONE_SOL_CHANNE_ID,
   LARGE_BUYS_CHANNEL_ID,
   PREPAID_DEX_CHANNEL_ID,
+  TEN_CTO,
   TEN_DEV_BURNS_CHANNEL_ID,
+  THIRTY_CTO,
+  TWENTY_CTO,
 } from "./constants/channels.js";
 import {
   TOKEN_META_DATA,
@@ -276,7 +279,7 @@ async function monitorTransaction(token, client) {
       await waitForSeconds(60);
 
       const url =
-        "https://cosmological-evocative-season.solana-mainnet.quiknode.pro/d9d3e63af0e78584d8477901191a985c9a71966b/";
+        "https://practical-thrumming-mountain.solana-mainnet.quiknode.pro/ecb66c08b2c93b801e98a19668ee7bc8df6f8ceb";
       const requestBody = {
         jsonrpc: "2.0",
         id: 1,
@@ -303,6 +306,11 @@ async function monitorTransaction(token, client) {
 
       const holdersList = await getTopHolders(monitoredAddress);
 
+      const tokenPrice =
+        tokenPaid > 0
+          ? (solReceived / tokenPaid).toFixed(10).toString() + "SOL/token"
+          : "N/A";
+
       if (!isFresh && solReceived > 3 && tokenPaid > 0) {
         let channel = await client.channels.fetch(LARGE_BUYS_CHANNEL_ID);
         sendLargeBuysChannel(
@@ -312,6 +320,7 @@ async function monitorTransaction(token, client) {
           solReceived,
           holdersList,
           txDateString,
+          tokenPrice,
           token
         );
       } else if (isFresh && solReceived > 0.001 && tokenPaid > 0) {
@@ -324,6 +333,7 @@ async function monitorTransaction(token, client) {
           solReceived,
           holdersList,
           txDateString,
+          tokenPrice,
           token
         );
       } else if (isFresh && solReceived > 0.0000000001 && tokenPaid > 0) {
@@ -336,6 +346,42 @@ async function monitorTransaction(token, client) {
           solReceived,
           holdersList,
           txDateString,
+          tokenPrice,
+          token
+        );
+      }
+
+      if (tokenPaid > 30e3) {
+        let channel = await client.channels.fetch(THIRTY_CTO);
+        sendCTOChannel(
+          channel,
+          buyerAddress,
+          tokenPaid,
+          solReceived,
+          txDateString,
+          tokenPrice,
+          token
+        );
+      } else if (tokenPaid > 20e3) {
+        let channel = await client.channels.fetch(TWENTY_CTO);
+        sendCTOChannel(
+          channel,
+          buyerAddress,
+          tokenPaid,
+          solReceived,
+          txDateString,
+          tokenPrice,
+          token
+        );
+      } else if (tokenPaid > 10e3) {
+        let channel = await client.channels.fetch(TEN_CTO);
+        sendCTOChannel(
+          channel,
+          buyerAddress,
+          tokenPaid,
+          solReceived,
+          txDateString,
+          tokenPrice,
           token
         );
       }
@@ -432,9 +478,15 @@ async function sendDevBurnChannel(
         },
         {
           name: "Social Media 📱",
-          value: `${token.twitter ? "[Twitter](" + token.twitter + ")" : ""}\n${
-            token.telegram ? "[Telegram](" + token.telegram + ")" : ""
-          }\n${token.website ? "[Website](" + token.website + ")" : ""}`,
+          value: `${
+            token.twitter ? "[Twitter](" + token.twitter + ")" : "No Twitter"
+          }\n${
+            token.telegram
+              ? "[Telegram](" + token.telegram + ")"
+              : "No Telegram"
+          }\n${
+            token.website ? "[Website](" + token.website + ")" : "No Website"
+          }`,
           inline: true,
         },
         {
@@ -516,6 +568,7 @@ async function sendLargeBuysChannel(
   solReceived,
   holdersList,
   txDateString,
+  tokenPrice,
   token
 ) {
   if (channel) {
@@ -544,11 +597,17 @@ async function sendLargeBuysChannel(
         {
           name: "Social Media 📱",
           value: `${
-            token.data.twitter ? "[Twitter](" + token.data.twitter + ")" : ""
+            token.data.twitter
+              ? "[Twitter](" + token.data.twitter + ")"
+              : "No Twitter"
           }\n${
-            token.data.telegram ? "[Telegram](" + token.data.telegram + ")" : ""
+            token.data.telegram
+              ? "[Telegram](" + token.data.telegram + ")"
+              : "No Telegram"
           }\n${
-            token.data.website ? "[Website](" + token.data.website + ")" : ""
+            token.data.website
+              ? "[Website](" + token.data.website + ")"
+              : "No Website"
           }`,
           inline: true,
         },
@@ -563,7 +622,90 @@ async function sendLargeBuysChannel(
         { name: "Current Market Cap 💰", value: "138604.74$", inline: true },
         {
           name: "Current Token Price",
-          value: "0.000000805 SOL/token",
+          value: tokenPrice,
+          inline: true,
+        }
+      )
+      .setTimestamp();
+    channel.send({ embeds: [embed] });
+  }
+}
+
+async function sendCTOChannel(
+  channel,
+  buyerAddress,
+  tokenPaid,
+  solReceived,
+  txDateString,
+  tokenPrice,
+  token
+) {
+  if (channel) {
+    const embed = new EmbedBuilder()
+      .setColor(0xff5733)
+      .setTitle(`${token.data.name.toUpperCase()} (${token.data.symbol})`)
+      .setThumbnail(token.data.image)
+      .addFields(
+        {
+          name: "Purchase Information 📄",
+          value:
+            "```" +
+            `${buyerAddress.slice(0, 6)} purchased ${tokenPaid} ${
+              token.data.symbol
+            }\nBought ${solReceived} SOL\nDev Is Not In` +
+            "```",
+        },
+        {
+          name: "CTO Telegrams 📢",
+          value:
+            "```" +
+            `https://t.me/+SeJWYaRIRn5mYzlk\nhttps://t.me/+_ggp3U3JoaJmNjVk` +
+            "```",
+        },
+        {
+          name: "CTO Replies 📝",
+          value: "```" + `Replies containing CTO: 4` + "```",
+        },
+        {
+          name: "Contract Address 📜",
+          value: "```" + `${token.mint}` + "```",
+        },
+        {
+          name: "Market Cap Movement 📈",
+          value:
+            "```" +
+            `Market Cap Has Increased From 23927.71$ To 29400.81$ (22.87%)` +
+            "```",
+        },
+        {
+          name: "Social Media 📱",
+          value: `${
+            token.data.twitter
+              ? "[Twitter](" + token.data.twitter + ")"
+              : "No Twitter"
+          }\n${
+            token.data.telegram
+              ? "[Telegram](" + token.data.telegram + ")"
+              : "No Telegram"
+          }\n${
+            token.data.website
+              ? "[Website](" + token.data.website + ")"
+              : "No Website"
+          }`,
+          inline: true,
+        },
+        {
+          name: "Useful Links 📎",
+          value:
+            "[Dev Wallet](https://link-to-dev-wallet) | [Buy Token](https://link-to-buy-token)",
+          inline: true,
+        },
+        { name: "Coin Created 💿", value: "5 hours ago", inline: true },
+        { name: "Bought 💿", value: txDateString, inline: true },
+        { name: "Current Market Cap 💰", value: "138604.74$", inline: true },
+        {
+          name: "Current Token Price",
+          value: tokenPrice,
           inline: true,
         }
       )
@@ -580,6 +722,7 @@ async function sendFreshSolChannel(
   solReceived,
   holdersList,
   transactionDate,
+  tokenPrice,
   token
 ) {
   if (channel) {
@@ -615,11 +758,17 @@ async function sendFreshSolChannel(
         {
           name: "Social Media 📱",
           value: `${
-            token.data.twitter ? "[Twitter](" + token.data.twitter + ")" : ""
+            token.data.twitter
+              ? "[Twitter](" + token.data.twitter + ")"
+              : "No Twitter"
           }\n${
-            token.data.telegram ? "[Telegram](" + token.data.telegram + ")" : ""
+            token.data.telegram
+              ? "[Telegram](" + token.data.telegram + ")"
+              : "No Telegram"
           }\n${
-            token.data.website ? "[Website](" + token.data.website + ")" : ""
+            token.data.website
+              ? "[Website](" + token.data.website + ")"
+              : "No Website"
           }`,
           inline: true,
         },

@@ -3,7 +3,7 @@ import { Connection, PublicKey, clusterApiUrl } from "@solana/web3.js";
 
 const { Metadata } = programs.metadata;
 const QUICK_CONNECT = new Connection(
-  "https://cosmological-evocative-season.solana-mainnet.quiknode.pro/d9d3e63af0e78584d8477901191a985c9a71966b/",
+  "https://practical-thrumming-mountain.solana-mainnet.quiknode.pro/ecb66c08b2c93b801e98a19668ee7bc8df6f8ceb",
   {
     commitment: "confirmed",
     maxSupportedTransactionVersion: 0,
