@@ -85,10 +85,11 @@ export function extractInformation(txDetails, monitoredAddress) {
     const postTokenBalance = meta.postTokenBalances[index];
 
     if (preTokenBalance.mint === monitoredAddress.toBase58()) {
-      tokenPaid = Math.abs(
-        (preTokenBalance.uiTokenAmount.uiAmount || 0) -
-          (postTokenBalance.uiTokenAmount.uiAmount || 0)
-      );
+      if (preTokenBalance.uiTokenAmount && postTokenBalance.uiTokenAmount)
+        tokenPaid = Math.abs(
+          (preTokenBalance.uiTokenAmount.uiAmount || 0) -
+            (postTokenBalance.uiTokenAmount.uiAmount || 0)
+        );
     }
   });
 
@@ -97,7 +98,26 @@ export function extractInformation(txDetails, monitoredAddress) {
   // Identify buyer (sender of transaction)
   buyerAddress = transaction.message.accountKeys[0];
 
-  return { buyerAddress, solReceived, tokenPaid, txDateString };
+  let isPrepaidDEX = false;
+  transaction.message.instructions.forEach((instruction, index) => {
+    const programId =
+      transaction.message.accountKeys[instruction.programIdIndex];
+    const knownDEXProgramIDs = [
+      "9xQeWvG816bUx9EPjHcB8zixKD6zvQNeCzpx1LtzC6z", // Serum
+      "nAqDh2wQRnfnjRU8zQZyz1DjoEVCtx76AzDpp5kPCW4", // Orca
+      "4k3Dyjzvzp8eMJN9xYbMxMmhD7f8y3ULp2cRZG2hgNm3", // Raydium,
+      "JUP2jxvNmAq9ScfH9xr6ht9WZutUrhYxQbQZfUrwcSN", // Jupiter
+      "SSwpkEEcbUqx4vtoEByFjSkhKdCT862DNVb52nZg1UZ", //Saber
+      "AMM55ShGKWzZP5xr4rdrujw9HhRmzzUTnXbH5ii59tz", //Aldrin
+      "5KGNRodP3BvGdLjkY7PUoAjtA1oe4eSTZQMRhRx1sPft", //Mango Markets
+    ];
+
+    if (knownDEXProgramIDs.includes(programId.toString())) {
+      isPrepaidDEX = true;
+    }
+  });
+
+  return { buyerAddress, solReceived, tokenPaid, txDateString, isPrepaidDEX };
 }
 
 export async function getTokenCreationTime(mintPubkey) {

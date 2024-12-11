@@ -23,10 +23,10 @@ import {
   FRESH_OVER_ONE_SOL_CHANNE_ID,
   LARGE_BUYS_CHANNEL_ID,
   PREPAID_DEX_CHANNEL_ID,
-  TEN_CTO,
+  TEN_CTO_CHANNEL_ID,
   TEN_DEV_BURNS_CHANNEL_ID,
-  THIRTY_CTO,
-  TWENTY_CTO,
+  THIRTY_CTO_CHANNEL_ID,
+  TWENTY_CTO_CHANNEL_ID,
 } from "./constants/channels.js";
 import {
   TOKEN_META_DATA,
@@ -300,8 +300,13 @@ async function monitorTransaction(token, client) {
 
       if (!txDetails) return;
 
-      const { buyerAddress, solReceived, tokenPaid, txDateString } =
-        extractInformation(txDetails, monitoredAddress);
+      const {
+        buyerAddress,
+        solReceived,
+        tokenPaid,
+        txDateString,
+        isPrepaidDEX,
+      } = extractInformation(txDetails, monitoredAddress);
       const { isFresh, fundingSource } = await isFreshWallet(buyerAddress);
 
       const holdersList = await getTopHolders(monitoredAddress);
@@ -311,7 +316,19 @@ async function monitorTransaction(token, client) {
           ? (solReceived / tokenPaid).toFixed(10).toString() + "SOL/token"
           : "N/A";
 
-      if (!isFresh && solReceived > 3 && tokenPaid > 0) {
+      if (isPrepaidDEX) {
+        let channel = await client.channels.fetch(PREPAID_DEX_CHANNEL_ID);
+        sendPrepaidDexChannel(
+          channel,
+          buyerAddress,
+          tokenPaid,
+          solReceived,
+          holdersList,
+          txDateString,
+          tokenPrice,
+          token
+        );
+      } else if (!isFresh && solReceived > 3 && tokenPaid > 0) {
         let channel = await client.channels.fetch(LARGE_BUYS_CHANNEL_ID);
         sendLargeBuysChannel(
           channel,
@@ -352,7 +369,7 @@ async function monitorTransaction(token, client) {
       }
 
       if (tokenPaid > 30e3) {
-        let channel = await client.channels.fetch(THIRTY_CTO);
+        let channel = await client.channels.fetch(THIRTY_CTO_CHANNEL_ID);
         sendCTOChannel(
           channel,
           buyerAddress,
@@ -363,7 +380,7 @@ async function monitorTransaction(token, client) {
           token
         );
       } else if (tokenPaid > 20e3) {
-        let channel = await client.channels.fetch(TWENTY_CTO);
+        let channel = await client.channels.fetch(TWENTY_CTO_CHANNEL_ID);
         sendCTOChannel(
           channel,
           buyerAddress,
@@ -374,7 +391,7 @@ async function monitorTransaction(token, client) {
           token
         );
       } else if (tokenPaid > 10e3) {
-        let channel = await client.channels.fetch(TEN_CTO);
+        let channel = await client.channels.fetch(TEN_CTO_CHANNEL_ID);
         sendCTOChannel(
           channel,
           buyerAddress,
@@ -585,6 +602,80 @@ async function sendLargeBuysChannel(
               token.data.symbol
             }\nBought ${solReceived} SOL` +
             "```",
+        },
+        {
+          name: "Contract Address 📜",
+          value: "```" + `${token.mint}` + "```",
+        },
+        {
+          name: "Holders 👯‍♀️",
+          value: "```" + `${holdersList}` + "```",
+        },
+        {
+          name: "Social Media 📱",
+          value: `${
+            token.data.twitter
+              ? "[Twitter](" + token.data.twitter + ")"
+              : "No Twitter"
+          }\n${
+            token.data.telegram
+              ? "[Telegram](" + token.data.telegram + ")"
+              : "No Telegram"
+          }\n${
+            token.data.website
+              ? "[Website](" + token.data.website + ")"
+              : "No Website"
+          }`,
+          inline: true,
+        },
+        {
+          name: "Useful Links 📎",
+          value:
+            "[Dev Wallet](https://link-to-dev-wallet) | [Buy Token](https://link-to-buy-token)",
+          inline: true,
+        },
+        { name: "Coin Created 💿", value: "5 hours ago", inline: true },
+        { name: "Bought 💿", value: txDateString, inline: true },
+        { name: "Current Market Cap 💰", value: "138604.74$", inline: true },
+        {
+          name: "Current Token Price",
+          value: tokenPrice,
+          inline: true,
+        }
+      )
+      .setTimestamp();
+    channel.send({ embeds: [embed] });
+  }
+}
+
+async function sendPrepaidDexChannel(
+  channel,
+  buyerAddress,
+  tokenPaid,
+  solReceived,
+  holdersList,
+  txDateString,
+  tokenPrice,
+  token
+) {
+  if (channel) {
+    const embed = new EmbedBuilder()
+      .setColor(0xff5733)
+      .setTitle(`${token.data.name.toUpperCase()} (${token.data.symbol})`)
+      .setThumbnail(token.data.image)
+      .addFields(
+        {
+          name: "Purchase Information 📄",
+          value:
+            "```" +
+            `${buyerAddress.slice(0, 6)} purchased ${tokenPaid} ${
+              token.data.symbol
+            }\nBought ${solReceived} SOL` +
+            "```",
+        },
+        {
+          name: "Dex Information 📊",
+          value: "Dex Status:Paid 📗",
         },
         {
           name: "Contract Address 📜",
